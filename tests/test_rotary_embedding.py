@@ -56,7 +56,12 @@ def _ref_rotary_embedding(
     cos_sin_cache: torch.Tensor,
     is_neox: bool,
 ) -> None:
-    """Pure-PyTorch reference implementation of rotary embedding."""
+    """Pure-PyTorch reference implementation of rotary embedding.
+
+    Uses Python scalars (.item()) rather than 0-dim tensor operations
+    to avoid a PyTorch bug where .float() on float32 tensors returns the
+    same view, causing aliasing issues in tight in-place update loops.
+    """
     rot_dim = cos_sin_cache.shape[-1]
     embed_dim = rot_dim // 2
 
@@ -65,8 +70,6 @@ def _ref_rotary_embedding(
 
     for t in range(num_tokens):
         pos = positions_flat[t].item()
-        cos_vals = cos_sin_cache[pos, :embed_dim].float()
-        sin_vals = cos_sin_cache[pos, embed_dim:].float()
 
         # Apply to query heads.
         num_heads = query.shape[-2]
@@ -77,14 +80,12 @@ def _ref_rotary_embedding(
                 else:
                     x_idx, y_idx = 2 * d, 2 * d + 1
 
-                x = query[t, h, x_idx].float()
-                y = query[t, h, y_idx].float()
-                query[t, h, x_idx] = (x * cos_vals[d] - y * sin_vals[d]).to(
-                    query.dtype
-                )
-                query[t, h, y_idx] = (y * cos_vals[d] + x * sin_vals[d]).to(
-                    query.dtype
-                )
+                x = query[t, h, x_idx].item()
+                y = query[t, h, y_idx].item()
+                c = cos_sin_cache[pos, d].item()
+                s = cos_sin_cache[pos, embed_dim + d].item()
+                query[t, h, x_idx] = x * c - y * s
+                query[t, h, y_idx] = y * c + x * s
 
         # Apply to key heads.
         if key is not None:
@@ -96,14 +97,12 @@ def _ref_rotary_embedding(
                     else:
                         x_idx, y_idx = 2 * d, 2 * d + 1
 
-                    x = key[t, h, x_idx].float()
-                    y = key[t, h, y_idx].float()
-                    key[t, h, x_idx] = (x * cos_vals[d] - y * sin_vals[d]).to(
-                        key.dtype
-                    )
-                    key[t, h, y_idx] = (y * cos_vals[d] + x * sin_vals[d]).to(
-                        key.dtype
-                    )
+                    x = key[t, h, x_idx].item()
+                    y = key[t, h, y_idx].item()
+                    c = cos_sin_cache[pos, d].item()
+                    s = cos_sin_cache[pos, embed_dim + d].item()
+                    key[t, h, x_idx] = x * c - y * s
+                    key[t, h, y_idx] = y * c + x * s
 
 
 @pytest.mark.parametrize("device", DEVICES)
