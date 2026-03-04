@@ -65,8 +65,6 @@ void rotary_embedding(torch::Tensor &positions, torch::Tensor &query,
     TORCH_CHECK(stream, "Failed to get current MPS stream");
 
     id<MTLDevice> device = stream->device();
-    id<MTLCommandBuffer> cmdBuf = stream->commandBuffer();
-    TORCH_CHECK(cmdBuf, "Failed to get command buffer");
 
     // Load embedded Metal library.
     NSError *error = nil;
@@ -117,9 +115,11 @@ void rotary_embedding(torch::Tensor &positions, torch::Tensor &query,
                             .UTF8String
                       : "");
 
-    dispatch_queue_t q = stream->queue();
-    dispatch_sync(q, ^{
-      id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+    // Use stream->commandEncoder() to properly integrate with PyTorch's
+    // MPS encoder lifecycle (kernel coalescing). Don't create encoders
+    // directly on the command buffer or manually call endEncoding.
+    dispatch_sync(stream->queue(), ^{
+      id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
       TORCH_CHECK(enc, "Failed to create compute encoder");
 
       [enc setComputePipelineState:pso];
@@ -179,9 +179,8 @@ void rotary_embedding(torch::Tensor &positions, torch::Tensor &query,
       MTLSize tg = MTLSizeMake(threads_per_tg, 1, 1);
 
       [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
-      [enc endEncoding];
     });
 
-    stream->synchronize(at::mps::SyncType::COMMIT);
+    stream->synchronize(at::mps::SyncType::COMMIT_AND_CONTINUE);
   }
 }
